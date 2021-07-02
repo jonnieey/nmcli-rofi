@@ -5,7 +5,7 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 FIELDS=SSID,SECURITY,BARS
 POSITION=0; XOFF=0; YOFF=0
 MAGIC=-4
-FONT="DejaVu Sans Mono Bold 14"
+FONT="monospace 4"
 
 # supported locales (en, ru, de, fr, hi, ja)
 declare -A LOC_ENABLE=(["en"]="enabled" ["ru"]="включен" ["de"]="aktiviert" ["fr"]="activé" ["hi"]="सक्षम" ["ja"]="有効")
@@ -39,10 +39,24 @@ function toggle_wifi () {
   echo $toggle
 }
 
-function current_connection () {
-  currssid=$(iwgetid -r)
-  [[ "$currssid" != '' ]] && currcon="Disconnect from $currssid" || currcon=""
-  echo $currcon
+function current_connections () {
+  # currssid=$(iwgetid -r)
+  currssids=$(nmcli --fields "NAME,DEVICE,STATE" c | grep activated | cut -d" " -f1)
+  # [[ "$currssid" != '' ]] && currcon="Disconnect from $currssid" || currcon=""
+  allssids=""
+  if [ "$currssids" != "" ]; then
+    for con in $currssids; do allssids+="$con "; done
+ fi
+ echo "Disconnect from $allssids"
+}
+
+function current_connections_list () {
+  # currssid=$(iwgetid -r)
+  currssids=$(nmcli --fields "NAME,DEVICE,STATE" c | grep activated | cut -d" " -f1)
+  # [[ "$currssid" != '' ]] && currcon="Disconnect from $currssid" || currcon=""
+  if [ "$currssids" != "" ]; then
+    for con in $currssids; do echo "Disconnect from $con "; done
+  fi
 }
 
 function nmcli_list () {
@@ -86,13 +100,12 @@ function menu () {
 
 function rofi_cmd () {
   # don't repeat lines with uniq -u
-  echo -e "$1" | uniq -u | rofi -dmenu -p "Wi-Fi SSID" -lines "$LINENUM" \
-    -location "$POSITION" -yoffset "$YOFF" -xoffset "$XOFF" -font "$FONT" -width "$RWIDTH"
+  echo -e "$1" | uniq -u | dmenu -i -p "Wi-Fi SSID " -l "$LINENUM" -g 1
 }
 
 function rofi_menu () {
     TOGGLE=$(toggle_wifi)
-    CURRCONNECT=$(current_connection)
+    CURRCONNECT=$(current_connections)
     [[ "$TOGGLE" =~ 'Enable' ]] && LIST="" || LIST=$(nmcli_list)
 
     MENU=$(menu "$LIST" "$CURRCONNECT" "$TOGGLE")
@@ -103,7 +116,7 @@ function rofi_menu () {
     rofi_cmd "$MENU"
 }
 
-function get_ssid () {
+function get_ssid_device () {
     # get fields in order
     eval FIELDSARR=( $(cat $NMCLI_ROFI_SOURCE | awk 'BEGIN { FS=","; OFS="\n" } /^FIELDS/ \
       { $1 = substr($1, 8); print $0; }') )
@@ -116,10 +129,11 @@ function get_ssid () {
     done
 
     # let for arithmetical vars
-    let AWKSSIDPOS=$SSID_POS+1
+    let AWKSSIDPOS=$SSID_POS+$2
 
     # get SSID from AWKSSIDPOS
     CHSSID=$(echo "$1" | sed  's/\s\{2,\}/\|/g' | awk -F "|" '{print $'$AWKSSIDPOS'}')
+
     echo "$CHSSID"
 }
 
@@ -128,56 +142,82 @@ function cleanup_networks () {
     | while read line; do nmcli con delete uuid $line; done
 }
 
+function get_available_connections() {
+    avail_conn=$(nmcli connection show | cut -d" " -f1 | tail -n +2)
+    echo $avail_conn
+}
+
 function main () {
-    if [ -r "$DIR/config" ]; then
-      source "$DIR/config"
-    elif [ -r "$HOME/.config/rofi/wifi" ]; then
-      source "$HOME/.config/rofi/wifi"
+    #if [ -r "$DIR/config" ]; then
+      #source "$DIR/config"
+    #elif [ -r "$HOME/.config/rofi/wifi" ]; then
+      #source "$HOME/.config/rofi/wifi"
+    if [ -r "$HOME/.config/nmcli-rofi/config" ]; then
+      source "$HOME/.config/nmcli-rofi/config"
     else
       echo "WARNING: config file not found! Using default values."
     fi
 
     OPS=$(rofi_menu)
-    CHSSID=$(get_ssid "$OPS")
+    CHSSID=$(get_ssid_device "$OPS", 1)
+    CHDEV=$(get_ssid_device "$OPS", 3)
+    AVALABLE_CONNECTIONS=$(get_available_connections)
 
     if [[ "$OPS" =~ 'Disable' ]]; then
       nmcli radio wifi off
+
+    elif [[ "$CHSSID" == '--' ]]; then
+          MSSID=$(echo -en "" | dmenu -i -p "Enter SSID: " -l "$LINENUM" -g 1)
+
+          # manual entry of the PASSWORD
+          MPASS=$(echo -en "" | dmenu -P -p "PASSWORD: " -l "$LINENUM"  -g 1)
+
+            nmcli c del "$MSSID"
+            nmcli c add  type wifi con-name "$MSSID" ifname "$CHDEV" ssid "$MSSID"
+            nmcli c modify "$MSSID" wifi-sec.key-mgmt wpa-psk
+            nmcli c modify "$MSSID" wifi-sec.psk "$MPASS"
+            nmcli c u "$MSSID"
 
     elif [[ "$OPS" =~ 'Enable' ]]; then
       nmcli radio wifi on
 
     elif [[ "$OPS" =~ 'Disconnect' ]]; then
-      nmcli con down uuid $CURRUUID
+      # nmcli con down uuid $CURRUUID
+      DISCON=$(echo -en "$(current_connections_list)" | dmenu -i -g 1 -p "Disconnect From ")
+      CONNAME=$(echo "$DISCON" | cut -d' ' -f3)
+      nmcli conn down $CONNAME
 
     elif [[ "$OPS" =~ 'Manual' ]]; then
       # Manual entry of the SSID
-      MSSID=$(echo -en "" | rofi -dmenu -p "SSID" -mesg "Enter the SSID of the network" \
-        -lines 0 -font "$FONT")
+      MSSID=$(echo -en "" | dmenu -p "Enter SSID "  -l "$LINENUM" -g 1)
 
       # manual entry of the PASSWORD
-      MPASS=$(echo -en "" | rofi -dmenu -password -p "PASSWORD" -mesg \
-        "Enter the PASSWORD of the network" -lines 0 -font "$FONT")
+      MPASS=$(echo -en "" | dmenu -P -p "Enter PASSWORD " -g 1)
 
       # If the user entered a manual password, then use the password nmcli command
       if [ "$MPASS" = "" ]; then
-        nmcli dev wifi con "$MSSID"
+        nmcli dev wifi con "$MSSID" ifname "$CHDEV"
       elif [ "$MSSID" != '' ] && [ "$MPASS" != '' ]; then
-        nmcli dev wifi con "$MSSID" password "$MPASS"
+        nmcli dev wifi con "$MSSID" password "$MPASS" ifname "$CHDEV"
       fi
 
     else
         if [[ "$OPS" =~ "WPA2" ]] || [[ "$OPS" =~ "WEP" ]]; then
-          WIFIPASS=$(echo -en "" | rofi -dmenu -password -p "PASSWORD" \
-            -mesg "Enter the PASSWORD of the network" -lines 0 -font "$FONT")
+            if [[ `echo "$AVALABLE_CONNECTIONS" |grep -w "$CHSSID"` ]]; then
+                nmcli c u "$CHSSID"
+            else
+                WIFIPASS=$(echo -en "" | dmenu -P -p "Enter PASSWORD " \
+                -l "$LINENUM"  -g 1)
+
+                if [[ "$CHSSID" != '' ]] && [[ "$WIFIPASS" != '' ]]; then
+                    nmcli dev wifi con "$CHSSID" password "$WIFIPASS" ifname "$CHDEV"
+                fi
+            fi
         fi
 
-        if [[ "$CHSSID" != '' ]] && [[ "$WIFIPASS" != '' ]]; then
-          nmcli dev wifi con "$CHSSID" password "$WIFIPASS"
-        fi
     fi
 }
 
 # clean up obsoleted connections
 # nmcli --fields UUID,TIMESTAMP-REAL,DEVICE con show | grep never |  awk '{print $1}' | while read line; do nmcli con delete uuid $line; done
-
 main
